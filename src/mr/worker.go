@@ -1,10 +1,21 @@
 package mr
 
+import "encoding/json"
 import "fmt"
+import "hash/fnv"
+import "io/ioutil"
 import "log"
 import "net/rpc"
-import "hash/fnv"
+import "os"
+import "time"
 
+type CallStatus int
+
+const (
+	ERROR CallStatus = iota
+	NO_TASK
+	OK
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -36,6 +47,11 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+	status := OK
+	for status == OK {
+		status = CallAssignMap(mapf)
+		time.Sleep(time.Second)
+	}
 }
 
 //
@@ -65,6 +81,62 @@ func CallExample() {
 	} else {
 		fmt.Printf("call failed!\n")
 	}
+}
+
+func CallAssignMap(mapf func(string, string) []KeyValue) CallStatus {
+	// declare an argument structure.
+	args := AssignMapArgs{}
+
+	// declare a reply structure.
+	reply := AssignMapReply{}
+
+	ok := call("Coordinator.AssignMap", &args, &reply)
+	if !ok {
+		fmt.Printf("call failed!\n")
+		return ERROR
+	}
+
+	if reply.NoTasks {
+		fmt.Println("No more map tasks to assign")
+		return NO_TASK
+	}
+	fmt.Printf("reply.TaskId %v\n", reply.TaskId)
+	fmt.Printf("reply.Filename %v\n", reply.Filename)
+	fmt.Printf("reply.NoTasks %v\n", reply.NoTasks)
+  filename := reply.Filename
+  file, err := os.Open(filename)
+  if err != nil {
+    log.Fatalf("cannot open %v", filename)
+  }
+  content, err := ioutil.ReadAll(file)
+  if err != nil {
+    log.Fatalf("cannot read %v", filename)
+  }
+  file.Close()
+  kva := mapf(filename, string(content))
+  reduceKvaMap := make(map[int][]KeyValue)
+	for _, kv := range kva {
+		reduceId := ihash(kv.Key) % reply.NumReduce
+    reduceKvaMap[reduceId] = append(reduceKvaMap[reduceId], kv)
+	}
+
+  //
+  // fmt.Println(reduceKvaMap)
+  fmt.Println(len(reduceKvaMap))
+  //
+	for key, value := range reduceKvaMap {
+		oname := fmt.Sprintf("mr-%d-%d", reply.TaskId, key)
+		ofile, _ := os.Create(oname)
+		enc := json.NewEncoder(ofile)
+		for _, kv := range value {
+      err := enc.Encode(&kv)
+      if err != nil {
+        log.Fatalf("Json encoder error on: %s", oname)
+      }
+		}
+		ofile.Close()
+	}
+  return OK
 }
 
 //

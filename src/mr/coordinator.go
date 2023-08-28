@@ -9,7 +9,10 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
-
+  mapped map[string]bool
+  fileList []string
+  nReduce int
+  currTaskId int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -21,6 +24,23 @@ type Coordinator struct {
 //
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
+	return nil
+}
+
+func (c *Coordinator) AssignMap(args *AssignMapArgs, reply *AssignMapReply) error {
+  reply.NumReduce = c.nReduce
+  for _, filename := range c.fileList {
+    if c.mapped[filename] == false {
+      reply.Filename = filename
+      reply.NoTasks = false
+      reply.TaskId = c.currTaskId
+      c.mapped[filename] = true
+      c.currTaskId++
+      return nil
+    }
+  }
+  reply.Filename = ""
+  reply.NoTasks = true
 	return nil
 }
 
@@ -60,10 +80,21 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	c := Coordinator{
+		mapped:     make(map[string]bool),
+		nReduce:    nReduce,
+		currTaskId: 0,
+	}
 
 	// Your code here.
-
+	for _, filename := range files {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		file.Close()
+    c.fileList = append(c.fileList, filename)
+	}
 
 	c.server()
 	return &c
