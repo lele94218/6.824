@@ -29,12 +29,30 @@ type AssignMapArgs struct {
 }
 
 type AssignMapReply struct {
-  TaskId int
-  Filename string
-  NoTasks bool
-  NumReduce int
+	TaskId    int
+	Filename  string
+	NoTasks   bool
+	NumReduce int
 }
 
+// Reduce args and reply
+type AssignReduceArgs struct {
+}
+
+type AssignReduceReply struct {
+	ReduceId    int
+	ReduceFiles []string
+	NoStart     bool
+	NoTasks     bool
+}
+
+// Done args and reply
+type DoneMapArgs struct {
+	Filename string
+}
+
+type DoneMapReply struct {
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
