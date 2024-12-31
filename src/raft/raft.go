@@ -253,12 +253,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if !ok {
 		fmt.Printf("[%d] sendRequestVote failed to server %d\n", rf.me, server)
 		return ok
 	}
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	if rf.state != Candidate || args.Term != rf.currentTerm || reply.Term < rf.currentTerm {
 		fmt.Printf("[%d] Request vote from server %d failed, state: %s, args.Term: %d, reply.Term: %d\n",
@@ -325,6 +325,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	if !ok {
 		fmt.Printf("[%d] sendAppendEntries failed to server %d\n", rf.me, server)
@@ -480,15 +482,15 @@ func (rf *Raft) startElection() {
 	rf.voteCount = 1
 
 	fmt.Printf("[%d] start election with term %d\n", rf.me, rf.currentTerm)
-	args := &RequestVoteArgs{
-		Term:         rf.currentTerm,
-		CandidateId:  rf.me,
-		LastLogIndex: rf.lastLogIndex,
-		LastLogTerm:  rf.lastLogTerm,
-	}
-	reply := &RequestVoteReply{}
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
+			args := &RequestVoteArgs{
+				Term:         rf.currentTerm,
+				CandidateId:  rf.me,
+				LastLogIndex: rf.lastLogIndex,
+				LastLogTerm:  rf.lastLogTerm,
+			}
+			reply := &RequestVoteReply{}
 			go func(server int) {
 				rf.sendRequestVote(server, args, reply)
 			}(i)
