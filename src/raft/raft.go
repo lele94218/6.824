@@ -467,44 +467,6 @@ func (rf *Raft) ticker() {
 		default:
 			fmt.Printf("[%d] invalid state: %s\n", rf.me, state.String())
 		}
-
-		/*
-			time.Sleep(rf.timeout)
-			state := rf.state
-			fmt.Printf("[%d] ticker timeout, state: %s\n", rf.me, state.String())
-
-			if state == Follower || state == Candidate {
-				time.Sleep(rf.timeout)
-				if rf.heartbeatReceived {
-					rf.heartbeatReceived = false
-					fmt.Printf("[%d] heartbeat received\n", rf.me)
-					continue
-				}
-				fmt.Printf("[%d] ticker timeout then start election\n", rf.me)
-				rf.startElection()
-			}
-
-			if state == Leader {
-				fmt.Printf("[%d] ticker timeout then leader send heartbeat\n", rf.me)
-				for i := 0; i < len(rf.peers); i++ {
-					if i != rf.me {
-						go func(server int) {
-							args := &AppendEntriesArgs{
-								Term:     rf.currentTerm,
-								LeaderId: rf.me,
-							}
-							reply := &AppendEntriesReply{}
-							ok := rf.sendAppendEntries(server, args, reply)
-							if !ok {
-								fmt.Printf("[%d] sendAppendEntries failed to server %d\n", rf.me, server)
-								return
-							}
-
-						}(i)
-					}
-				}
-			}
-		*/
 	}
 }
 
@@ -532,71 +494,6 @@ func (rf *Raft) startElection() {
 			}(i)
 		}
 	}
-
-	/*
-		rf.mu.Lock()
-
-		rf.state = Candidate
-		rf.timeout = randomTimeout()
-		rf.currentTerm++
-		rf.votedFor = rf.me
-
-		rf.mu.Unlock()
-		fmt.Printf("[%d] start election with term %d\n", rf.me, rf.currentTerm)
-
-		votes := 1
-		var wg sync.WaitGroup
-		for i := 0; i < len(rf.peers); i++ {
-			if i != rf.me {
-				wg.Add(1)
-				go func(server int) {
-					defer wg.Done()
-					args := &RequestVoteArgs{
-						Term:         rf.currentTerm,
-						CandidateId:  rf.me,
-						LastLogIndex: rf.lastLogIndex,
-						LastLogTerm:  rf.lastLogTerm,
-					}
-					reply := &RequestVoteReply{}
-
-					ok := rf.sendRequestVote(server, args, reply)
-					if !ok {
-						fmt.Printf("[%d] sendRequestVote failed to server %d\n", rf.me, server)
-						return
-					}
-					fmt.Printf("[%d] sendRequestVote success to server %d\n", rf.me, server)
-
-					if reply.VoteGranted {
-						votes++
-					}
-				}(i)
-			}
-		}
-
-		wg.Wait()
-		fmt.Printf("[%d] votes: %d\n", rf.me, votes)
-		if votes > len(rf.peers)/2 {
-			// become leader
-			rf.mu.Lock()
-			rf.state = Leader
-			fmt.Printf("[%d] this server become leader\n", rf.me)
-			rf.mu.Unlock()
-
-			for i := 0; i < len(rf.peers); i++ {
-				if i != rf.me {
-					go func(server int) {
-						args := &AppendEntriesArgs{
-							Term:     rf.currentTerm,
-							LeaderId: rf.me,
-						}
-						reply := &AppendEntriesReply{}
-						rf.sendAppendEntries(server, args, reply)
-					}(i)
-				}
-			}
-			return
-		}
-	*/
 }
 
 func randomTimeout() time.Duration {
