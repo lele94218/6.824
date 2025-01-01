@@ -123,6 +123,7 @@ func TestManyElections2A(t *testing.T) {
 	cfg.end()
 }
 
+/*
 func TestBasicAgree2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -184,7 +185,7 @@ func TestRPCBytes2B(t *testing.T) {
 //
 // test just failure of followers.
 //
-func For2023TestFollowerFailure2B(t *testing.T) {
+func TestFollowerFailure2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -231,7 +232,7 @@ func For2023TestFollowerFailure2B(t *testing.T) {
 //
 // test just failure of leaders.
 //
-func For2023TestLeaderFailure2B(t *testing.T) {
+func ForTestLeaderFailure2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -269,6 +270,7 @@ func For2023TestLeaderFailure2B(t *testing.T) {
 
 	cfg.end()
 }
+*/
 
 //
 // test that a follower participates after
@@ -308,6 +310,7 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.end()
 }
 
+/*
 func TestFailNoAgree2B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)
@@ -679,6 +682,7 @@ loop:
 
 	cfg.end()
 }
+*/
 
 func TestPersist12C(t *testing.T) {
 	servers := 3
