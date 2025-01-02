@@ -90,12 +90,10 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	applyCh      chan ApplyMsg
-	state        State
-	timeout      time.Duration
-	voteCount    int
-	lastLogIndex int
-	lastLogTerm  int
+	applyCh   chan ApplyMsg
+	state     State
+	timeout   time.Duration
+	voteCount int
 
 	// Persistent state on all servers
 	currentTerm int
@@ -142,6 +140,13 @@ func (rf *Raft) getLastTerm() int {
 	return rf.log[rf.getLastIndex()].Term
 }
 
+func (rf *Raft) resetChannels() {
+  rf.winVoteCh = make(chan bool)
+  rf.stepDownCh = make(chan bool)
+  rf.grantVoteCh = make(chan bool)
+  rf.heartbeatCh = make(chan bool)
+}
+
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
@@ -161,7 +166,7 @@ func (rf *Raft) applyLogs() {
 	defer rf.mu.Unlock()
 
 	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-		DPrintf("[%d] applyLogs: %d\n", rf.me, i)
+		EPrintf("[IMPORTANT][%d] applyLogs: %v\n", rf.me, rf.log[i])
 		msg := ApplyMsg{
 			CommandValid: true,
 			Command:      rf.log[i].Command,
@@ -174,6 +179,8 @@ func (rf *Raft) applyLogs() {
 		}
 		rf.lastApplied = i
 	}
+	EPrintf("[IMPORTANT][%d] full log: %v lastApplied: %d commitIndex: %d\n",
+		rf.me, rf.log, rf.lastApplied, rf.commitIndex)
 }
 
 // restore previously persisted state.
@@ -240,10 +247,26 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	DPrintf("[%d] RequestVote from server %d\n", rf.me, args.CandidateId)
-	DPrintf("[%d] currentTerm: %d, args.Term: %d\n", rf.me, rf.currentTerm, args.Term)
+	EPrintf("[%d] RequestVote from server %d\n", rf.me, args.CandidateId)
+	EPrintf("[%d] currentTerm: %d, args.Term: %d\n", rf.me, rf.currentTerm, args.Term)
 	if args.Term < rf.currentTerm {
 		DPrintf("[%d] vote for server %d failed, args.Term < rf.currentTerm\n", rf.me, args.CandidateId)
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.LastLogTerm < rf.getLastTerm() {
+		DPrintf("[%d] vote for server %d failed because not up-to-date, args.LastLogTerm: %d, rf.getLastTerm(): %d\n",
+			rf.me, args.CandidateId, args.LastLogTerm, rf.getLastTerm())
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.LastLogTerm == rf.getLastTerm() && args.LastLogIndex < rf.getLastIndex() {
+		DPrintf("[%d] vote for server %d failed because not up-to-date, args.LastLogIndex: %d, rf.getLastIndex(): %d\n",
+			rf.me, args.CandidateId, args.LastLogIndex, rf.getLastIndex())
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		return
@@ -296,6 +319,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	DPrintf("[%d] calling sendRequestVote to server %d\n", rf.me, server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -327,6 +351,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 				DPrintf("[%d] winVoteCh is full\n", rf.me)
 			}
 		}
+	} else {
+		DPrintf("[%d] vote from server %d is rejected\n", rf.me, server)
 	}
 	return ok
 }
@@ -368,16 +394,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	DPrintf("[%d] become follower with term %d leaderId: %d\n",
 		rf.me, rf.currentTerm, args.LeaderId)
 
-  // Append entries
-  for i := 0; i < len(args.Entries); i++ {
-    index := args.PrevLogIndex + i + 1
-    if index >= len(rf.log) {
-      rf.log = append(rf.log, args.Entries[i])
-    }
-  }
-  rf.lastLogIndex = args.PrevLogIndex
-  rf.commitIndex = rf.getLastIndex()
-  go rf.applyLogs()
+	// Append entries
+	for i := 0; i < len(args.Entries); i++ {
+		index := args.PrevLogIndex + i + 1
+		if index >= len(rf.log) {
+			rf.log = append(rf.log, args.Entries[i])
+		}
+	}
+	// rf.lastLogIndex = args.PrevLogIndex
+	rf.commitIndex = rf.getLastIndex()
+	go rf.applyLogs()
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
@@ -440,7 +466,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	isLeader = true
 	term = rf.currentTerm
-	DPrintf("[%d] Start send command: %v\n", rf.me, command)
+	EPrintf("[%d] Start send command: %v\n", rf.me, command)
 	rf.log = append(rf.log, LogEntry{Term: term, Command: command})
 	index = rf.getLastIndex()
 
@@ -500,8 +526,9 @@ func (rf *Raft) toLeader() {
 		return
 	}
 	rf.state = Leader
-	rf.commitIndex = 0
-	rf.lastApplied = 0
+  rf.resetChannels()
+	// rf.commitIndex = 0
+	// rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 	lastLogIndex := rf.getLastIndex()
@@ -509,7 +536,9 @@ func (rf *Raft) toLeader() {
 		rf.nextIndex[i] = lastLogIndex + 1
 		rf.matchIndex[i] = 0
 	}
-	DPrintf("[%d] become leader with term %d\n", rf.me, rf.currentTerm)
+	EPrintf("[%d] become leader with term %d\n", rf.me, rf.currentTerm)
+  // Sleep for a while to avoid no agreement on election.
+  time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
 	rf.broadcastHeartbeat()
 }
 
@@ -518,6 +547,7 @@ func (rf *Raft) toFollower(term int) {
 	rf.state = Follower
 	rf.currentTerm = term
 	rf.votedFor = -1
+	EPrintf("[%d] become follower with term %d\n", rf.me, term)
 	if state != Follower {
 		select {
 		case rf.stepDownCh <- true:
@@ -538,7 +568,7 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		state := rf.state
 		rf.mu.Unlock()
-		// DPrintf("[%d] ticker state: %s\n", rf.me, state.String())
+		DPrintf("[%d] ticker state: %s\n", rf.me, state.String())
 
 		switch state {
 		case Leader:
@@ -581,6 +611,7 @@ func (rf *Raft) startElection() {
 	defer rf.mu.Unlock()
 
 	rf.state = Candidate
+  rf.resetChannels()
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.voteCount = 1
@@ -591,8 +622,8 @@ func (rf *Raft) startElection() {
 			args := &RequestVoteArgs{
 				Term:         rf.currentTerm,
 				CandidateId:  rf.me,
-				LastLogIndex: rf.lastLogIndex,
-				LastLogTerm:  rf.lastLogTerm,
+				LastLogIndex: rf.getLastIndex(),
+				LastLogTerm:  rf.getLastTerm(),
 			}
 			reply := &RequestVoteReply{}
 			go func(server int) {
