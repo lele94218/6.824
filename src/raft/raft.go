@@ -141,10 +141,10 @@ func (rf *Raft) getLastTerm() int {
 }
 
 func (rf *Raft) resetChannels() {
-  rf.winVoteCh = make(chan bool)
-  rf.stepDownCh = make(chan bool)
-  rf.grantVoteCh = make(chan bool)
-  rf.heartbeatCh = make(chan bool)
+	rf.winVoteCh = make(chan bool)
+	rf.stepDownCh = make(chan bool)
+	rf.grantVoteCh = make(chan bool)
+	rf.heartbeatCh = make(chan bool)
 }
 
 // save Raft's persistent state to stable storage,
@@ -172,11 +172,7 @@ func (rf *Raft) applyLogs() {
 			Command:      rf.log[i].Command,
 			CommandIndex: i,
 		}
-		select {
-		case rf.applyCh <- msg:
-		default:
-			DPrintf("[%d] applyCh is full\n", rf.me)
-		}
+		rf.applyCh <- msg
 		rf.lastApplied = i
 	}
 	EPrintf("[IMPORTANT][%d] full log: %v lastApplied: %d commitIndex: %d\n",
@@ -394,6 +390,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	DPrintf("[%d] become follower with term %d leaderId: %d\n",
 		rf.me, rf.currentTerm, args.LeaderId)
 
+	// Check follower log is shorter than leader
+	if args.PrevLogIndex > rf.getLastIndex() {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
 	// Append entries
 	for i := 0; i < len(args.Entries); i++ {
 		index := args.PrevLogIndex + i + 1
@@ -425,10 +428,14 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	}
 
 	// Update nextIndex and matchIndex
-	DPrintf("[%d] sendAppendEntries to server %d with entries: %v\n", rf.me, server, args.Entries)
 	if reply.Success {
+		EPrintf("[%d] AppendEntries to server %d success\n", rf.me, server)
 		rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
+	} else {
+		rf.nextIndex[server]--
+		EPrintf("[%d] AppendEntries to server %d failed, change nextIndex: %d\n",
+			rf.me, server, rf.nextIndex[server])
 	}
 
 	rf.commitIndex = rf.getLastIndex()
@@ -526,7 +533,7 @@ func (rf *Raft) toLeader() {
 		return
 	}
 	rf.state = Leader
-  rf.resetChannels()
+	rf.resetChannels()
 	// rf.commitIndex = 0
 	// rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(rf.peers))
@@ -537,8 +544,8 @@ func (rf *Raft) toLeader() {
 		rf.matchIndex[i] = 0
 	}
 	EPrintf("[%d] become leader with term %d\n", rf.me, rf.currentTerm)
-  // Sleep for a while to avoid no agreement on election.
-  time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+	// Sleep for a while to avoid no agreement on election.
+	time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
 	rf.broadcastHeartbeat()
 }
 
@@ -611,7 +618,7 @@ func (rf *Raft) startElection() {
 	defer rf.mu.Unlock()
 
 	rf.state = Candidate
-  rf.resetChannels()
+	rf.resetChannels()
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.voteCount = 1

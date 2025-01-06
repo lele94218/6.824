@@ -10,3 +10,12 @@ mrtmp.*
 /main/mrcoordinator
 /main/mrsequential
 /main/mrworker
+
+# Ignore Visual Studio Code files
+.vscode/*
+*.code-workspace
+
+# Ignore macOS files
+.DS_Store
+.AppleDouble
+.LSOverride
