@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -113,6 +114,16 @@ type Raft struct {
 	stepDownCh  chan bool
 	grantVoteCh chan bool
 	heartbeatCh chan bool
+}
+
+func (rf *Raft) ToString() string {
+	return fmt.Sprintf(
+		`[%d]Raft[state: %s, currentTerm: %d,
+		 votedFor: %d, log: %v, lastApplied: %d,
+		 commitIndex: %d, nextIndex: %v, matchIndex: %v]`,
+		rf.me, rf.state.String(), rf.currentTerm,
+		rf.votedFor, rf.log, rf.lastApplied, rf.commitIndex,
+		rf.nextIndex, rf.matchIndex)
 }
 
 // return currentTerm and whether this server
@@ -356,6 +367,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 type AppendEntriesArgs struct {
 	Term         int
 	LeaderId     int
+	LeaderCommit int
 	PrevLogIndex int
 	PrevLogTerm  int
 	Entries      []LogEntry
@@ -396,17 +408,47 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
+	// If an existing entry conflicts with a new one
+	// (same indexbut different terms), delete the existing entry
+	// and all that follow it
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		EPrintf("[%d] conflict detected, args.PrevLogIndex: %d, args.PrevLogTerm: %d, rf.log[args.PrevLogIndex].Term: %d\n",
+			rf.me, args.PrevLogIndex, args.PrevLogTerm, rf.log[args.PrevLogIndex].Term)
+		conflictIndex := args.PrevLogIndex
+		for i := args.PrevLogIndex; i >= 0 &&
+			rf.log[i].Term == rf.log[args.PrevLogIndex].Term; i-- {
+			conflictIndex = i
+		}
+		rf.lastApplied = conflictIndex
+		rf.log = rf.log[:conflictIndex+1]
+		EPrintf("[%d] re-seek the conflictIndex: %d, log: %v\n",
+			rf.me, conflictIndex, rf.log)
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
 
 	// Append entries
-	for i := 0; i < len(args.Entries); i++ {
-		index := args.PrevLogIndex + i + 1
-		if index >= len(rf.log) {
-			rf.log = append(rf.log, args.Entries[i])
+	i, j := args.PrevLogIndex+1, 0
+	for ; i < len(rf.log) && j < len(args.Entries); i, j = i+1, j+1 {
+		if rf.log[i].Term != args.Entries[j].Term {
+			break
 		}
 	}
-	// rf.lastLogIndex = args.PrevLogIndex
-	rf.commitIndex = rf.getLastIndex()
-	go rf.applyLogs()
+	rf.log = rf.log[:i]
+	args.Entries = args.Entries[j:]
+	rf.log = append(rf.log, args.Entries...)
+
+	// If leaderCommit > commitIndex,
+	// set commitIndex =min(leaderCommit, index of last new entry)
+	if args.LeaderCommit > rf.commitIndex {
+		if args.LeaderCommit > rf.getLastIndex() {
+			rf.commitIndex = rf.getLastIndex()
+		} else {
+			rf.commitIndex = args.LeaderCommit
+		}
+		go rf.applyLogs()
+	}
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
@@ -434,13 +476,31 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 	} else {
 		rf.nextIndex[server]--
+		rf.matchIndex[server] = 0
 		EPrintf("[%d] AppendEntries to server %d failed, change nextIndex: %d\n",
 			rf.me, server, rf.nextIndex[server])
 	}
-
-	rf.commitIndex = rf.getLastIndex()
-	DPrintf("[%d] commiting index: %d\n", rf.me, rf.commitIndex)
-	go rf.applyLogs()
+	// if there exists an N such that N > commitIndex, a majority of
+	// matchIndex[i] >= N, and log[N].term == currentTerm, set commitIndex = N
+	EPrintf("[%d] finding the n to commit\n", rf.me)
+	EPrintf(rf.ToString())
+	for n := rf.getLastIndex(); n > rf.commitIndex; n-- {
+		count := 1
+		if rf.log[n].Term == rf.currentTerm {
+			for server := 0; server < len(rf.peers); server++ {
+				if server != rf.me && rf.matchIndex[server] >= n {
+					count++
+				}
+			}
+		}
+		EPrintf("[%d] n: %d, count: %d\n", rf.me, n, count)
+		if count > len(rf.peers)/2 {
+			rf.commitIndex = n
+			EPrintf("[%d] commiting index: %d\n", rf.me, rf.commitIndex)
+			go rf.applyLogs()
+			break
+		}
+	}
 
 	return ok
 }
@@ -513,8 +573,9 @@ func (rf *Raft) broadcastHeartbeat() {
 				args := &AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
+					LeaderCommit: rf.commitIndex,
 					PrevLogIndex: rf.nextIndex[server] - 1,
-					PrevLogTerm:  rf.getLastTerm(),
+					PrevLogTerm:  rf.log[rf.nextIndex[server]-1].Term,
 					Entries:      make([]LogEntry, len(entries)),
 				}
 				copy(args.Entries, entries)
@@ -544,6 +605,7 @@ func (rf *Raft) toLeader() {
 		rf.matchIndex[i] = 0
 	}
 	EPrintf("[%d] become leader with term %d\n", rf.me, rf.currentTerm)
+	EPrintf(rf.ToString())
 	// Sleep for a while to avoid no agreement on election.
 	time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
 	rf.broadcastHeartbeat()
