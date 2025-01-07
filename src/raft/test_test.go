@@ -280,7 +280,6 @@ func TestFailAgree2B(t *testing.T) {
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
-	fmt.Printf("[Testing] disconnecting %v\n", (leader+1)%servers)
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
@@ -292,7 +291,6 @@ func TestFailAgree2B(t *testing.T) {
 
 	// re-connect
 	cfg.connect((leader + 1) % servers)
-	fmt.Printf("[Testing] connecting %v\n", (leader+1)%servers)
 
 	// the full set of servers should preserve
 	// previous agreements, and be able to agree
@@ -318,9 +316,6 @@ func TestFailNoAgree2B(t *testing.T) {
 	cfg.disconnect((leader + 1) % servers)
 	cfg.disconnect((leader + 2) % servers)
 	cfg.disconnect((leader + 3) % servers)
-	fmt.Printf("[Testing] disconnected %v\n", (leader+1)%servers)
-	fmt.Printf("[Testing] disconnected %v\n", (leader+2)%servers)
-	fmt.Printf("[Testing] disconnected %v\n", (leader+3)%servers)
 
 	index, _, ok := cfg.rafts[leader].Start(20)
 	if ok != true {
@@ -341,9 +336,6 @@ func TestFailNoAgree2B(t *testing.T) {
 	cfg.connect((leader + 1) % servers)
 	cfg.connect((leader + 2) % servers)
 	cfg.connect((leader + 3) % servers)
-	fmt.Printf("[Testing] connecting %v\n", (leader+1)%servers)
-	fmt.Printf("[Testing] connecting %v\n", (leader+2)%servers)
-	fmt.Printf("[Testing] connecting %v\n", (leader+3)%servers)
 
 	// the disconnected majority may have chosen a leader from
 	// among their own ranks, forgetting index 2.
@@ -502,6 +494,7 @@ func TestRejoin2B(t *testing.T) {
 
 func TestBackup2B(t *testing.T) {
 	servers := 5
+  N := 50
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
 
@@ -516,7 +509,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.disconnect((leader1 + 4) % servers)
 
 	// submit lots of commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < N; i++ {
 		cfg.rafts[leader1].Start(rand.Int())
 	}
 
@@ -531,7 +524,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect((leader1 + 4) % servers)
 
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < N; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
 
@@ -544,7 +537,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.disconnect(other)
 
 	// lots more commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < N; i++ {
 		cfg.rafts[leader2].Start(rand.Int())
 	}
 
@@ -559,7 +552,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect(other)
 
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < N; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
 

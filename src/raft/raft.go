@@ -117,6 +117,7 @@ type Raft struct {
 }
 
 func (rf *Raft) ToString() string {
+  // Threading unsafe
 	return fmt.Sprintf(
 		`[%d]Raft[state: %s, currentTerm: %d,
 		 votedFor: %d, log: %v, lastApplied: %d,
@@ -254,6 +255,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+
 	EPrintf("[%d] RequestVote from server %d\n", rf.me, args.CandidateId)
 	EPrintf("[%d] currentTerm: %d, args.Term: %d\n", rf.me, rf.currentTerm, args.Term)
 	if args.Term < rf.currentTerm {
@@ -263,29 +267,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	if args.LastLogTerm < rf.getLastTerm() {
-		DPrintf("[%d] vote for server %d failed because not up-to-date, args.LastLogTerm: %d, rf.getLastTerm(): %d\n",
-			rf.me, args.CandidateId, args.LastLogTerm, rf.getLastTerm())
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
-
-	if args.LastLogTerm == rf.getLastTerm() && args.LastLogIndex < rf.getLastIndex() {
-		DPrintf("[%d] vote for server %d failed because not up-to-date, args.LastLogIndex: %d, rf.getLastIndex(): %d\n",
-			rf.me, args.CandidateId, args.LastLogIndex, rf.getLastIndex())
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
-
 	if args.Term > rf.currentTerm {
-		DPrintf("[%d] vote for server %d, args.Term > rf.currentTerm\n", rf.me, args.CandidateId)
+		DPrintf("[%d] became follower, args.Term > rf.currentTerm\n", rf.me, args.CandidateId)
 		rf.toFollower(args.Term)
 	}
 
-	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		DPrintf("[%d] vote one time for server %d\n", rf.me, args.CandidateId)
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) &&
+		((args.LastLogTerm == rf.getLastTerm() && args.LastLogIndex >= rf.getLastIndex()) ||
+			args.LastLogTerm > rf.getLastTerm()) {
+		DPrintf("[%d] vote for server %d succeed since leader is up-to-date, args.LastLogIndex: %d, rf.getLastIndex(): %d\n",
+			rf.me, args.CandidateId, args.LastLogIndex, rf.getLastIndex())
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
@@ -374,13 +365,20 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term          int
+	Success       bool
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	reply.ConflictTerm = 0
+	reply.Success = false
+	reply.ConflictIndex = 0
+	reply.ConflictTerm = rf.currentTerm
+
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
@@ -391,25 +389,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.toFollower(args.Term)
 	}
 
-	DPrintf("[%d] AppendEntries from leader %d\n", rf.me, args.LeaderId)
 	select {
 	case rf.heartbeatCh <- true:
 	default:
 		DPrintf("[%d] heartbeatCh is full\n", rf.me)
 	}
-	rf.currentTerm = args.Term
-	rf.state = Follower
-	DPrintf("[%d] become follower with term %d leaderId: %d\n",
-		rf.me, rf.currentTerm, args.LeaderId)
 
 	// Check follower log is shorter than leader
 	if args.PrevLogIndex > rf.getLastIndex() {
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.ConflictIndex = rf.getLastIndex() + 1
 		return
 	}
 	// If an existing entry conflicts with a new one
-	// (same indexbut different terms), delete the existing entry
+	// (same index but different terms), delete the existing entry
 	// and all that follow it
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		EPrintf("[%d] conflict detected, args.PrevLogIndex: %d, args.PrevLogTerm: %d, rf.log[args.PrevLogIndex].Term: %d\n",
@@ -420,9 +414,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			conflictIndex = i
 		}
 		rf.lastApplied = conflictIndex
-		rf.log = rf.log[:conflictIndex+1]
-		EPrintf("[%d] re-seek the conflictIndex: %d, log: %v\n",
-			rf.me, conflictIndex, rf.log)
+		reply.ConflictIndex = conflictIndex
+		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -473,17 +466,33 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	if reply.Success {
 		EPrintf("[%d] AppendEntries to server %d success\n", rf.me, server)
 		rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
+		if rf.matchIndex[server] < rf.nextIndex[server]-1 {
+			rf.matchIndex[server] = rf.nextIndex[server] - 1
+		}
+	} else if reply.ConflictTerm == 0 {
+		rf.nextIndex[server] = reply.ConflictIndex
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
+		EPrintf("[%d] AppendEntries to server %d failed, conflict index: %d log %v\n",
+			rf.me, server, reply.ConflictIndex, rf.log)
 	} else {
-		rf.nextIndex[server]--
-		rf.matchIndex[server] = 0
-		EPrintf("[%d] AppendEntries to server %d failed, change nextIndex: %d\n",
-			rf.me, server, rf.nextIndex[server])
+		// try to find the conflictTerm in log
+		newNextIndex := rf.getLastIndex()
+		for ; newNextIndex >= 0; newNextIndex-- {
+			if rf.log[newNextIndex].Term == reply.ConflictTerm {
+				break
+			}
+		}
+		// if not found, set nextIndex to conflictIndex
+		if newNextIndex < 0 {
+			rf.nextIndex[server] = reply.ConflictIndex
+		} else {
+			rf.nextIndex[server] = newNextIndex
+		}
+		rf.matchIndex[server] = rf.nextIndex[server] - 1
 	}
 	// if there exists an N such that N > commitIndex, a majority of
 	// matchIndex[i] >= N, and log[N].term == currentTerm, set commitIndex = N
 	EPrintf("[%d] finding the n to commit\n", rf.me)
-	EPrintf(rf.ToString())
 	for n := rf.getLastIndex(); n > rf.commitIndex; n-- {
 		count := 1
 		if rf.log[n].Term == rf.currentTerm {
@@ -605,7 +614,6 @@ func (rf *Raft) toLeader() {
 		rf.matchIndex[i] = 0
 	}
 	EPrintf("[%d] become leader with term %d\n", rf.me, rf.currentTerm)
-	EPrintf(rf.ToString())
 	// Sleep for a while to avoid no agreement on election.
 	time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
 	rf.broadcastHeartbeat()
@@ -637,8 +645,6 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		state := rf.state
 		rf.mu.Unlock()
-		DPrintf("[%d] ticker state: %s\n", rf.me, state.String())
-
 		switch state {
 		case Leader:
 			select {
