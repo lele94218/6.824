@@ -18,15 +18,14 @@ package raft
 //
 
 import (
-	//	"bytes"
+	"6.824/labgob"
+	"6.824/labrpc"
+	"bytes"
 	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	//	"6.824/labgob"
-	"6.824/labrpc"
 )
 
 // as each Raft peer becomes aware that successive log entries are
@@ -117,7 +116,7 @@ type Raft struct {
 }
 
 func (rf *Raft) ToString() string {
-  // Threading unsafe
+	// Threading unsafe
 	return fmt.Sprintf(
 		`[%d]Raft[state: %s, currentTerm: %d,
 		 votedFor: %d, log: %v, lastApplied: %d,
@@ -171,6 +170,16 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(rf.currentTerm) != nil ||
+		e.Encode(rf.votedFor) != nil ||
+		e.Encode(rf.log) != nil {
+		EPrintf("[ERROR] [%d] persist failed\n", rf.me)
+		panic("persist failed")
+	}
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 func (rf *Raft) applyLogs() {
@@ -193,7 +202,9 @@ func (rf *Raft) applyLogs() {
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
+	EPrintf("[%d] readPersist\n", rf.me)
 	if data == nil || len(data) < 1 { // bootstrap without any state?
+		EPrintf("[%d] readPersist no data found\n", rf.me)
 		return
 	}
 	// Your code here (2C).
@@ -209,6 +220,21 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		EPrintf("[ERROR] [%d] readPersist failed\n", rf.me)
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -254,6 +280,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+  defer rf.persist()
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -374,6 +401,8 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+  defer rf.persist()
+
 	reply.ConflictTerm = 0
 	reply.Success = false
 	reply.ConflictIndex = 0
@@ -451,6 +480,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+  defer rf.persist()
 
 	if !ok {
 		DPrintf("[%d] sendAppendEntries failed to server %d\n", rf.me, server)
@@ -576,15 +606,17 @@ func (rf *Raft) broadcastHeartbeat() {
 	}
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
+			entries := rf.log[rf.nextIndex[i]:]
+			prevTerm := rf.log[rf.nextIndex[i]-1].Term
+			leaderCommit := rf.commitIndex
 			go func(server int) {
-				entries := rf.log[rf.nextIndex[server]:]
 				DPrintf("[%d] broadcastHeartbeat to server %d with entries: %v\n", rf.me, server, entries)
 				args := &AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
-					LeaderCommit: rf.commitIndex,
+					LeaderCommit: leaderCommit,
 					PrevLogIndex: rf.nextIndex[server] - 1,
-					PrevLogTerm:  rf.log[rf.nextIndex[server]-1].Term,
+					PrevLogTerm:  prevTerm,
 					Entries:      make([]LogEntry, len(entries)),
 				}
 				copy(args.Entries, entries)
