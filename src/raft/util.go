@@ -10,7 +10,7 @@ import (
 // Debugging
 var (
 	Debug = false
-	Error = true
+	Error = false
 )
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {

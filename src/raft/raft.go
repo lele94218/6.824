@@ -280,7 +280,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-  defer rf.persist()
+	defer rf.persist()
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -346,22 +346,21 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	DPrintf("[%d] calling sendRequestVote to server %d\n", rf.me, server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if !ok {
 		DPrintf("[%d] sendRequestVote failed to server %d\n", rf.me, server)
 		return ok
 	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	if rf.state != Candidate || args.Term != rf.currentTerm || reply.Term < rf.currentTerm {
-		DPrintf("[%d] Request vote from server %d failed, state: %s, args.Term: %d, reply.Term: %d\n",
-			rf.me, server, rf.state.String(), args.Term, reply.Term)
 		return ok
 	}
 
 	if reply.Term > rf.currentTerm {
 		DPrintf("[%d] Request vote from server %d failed, reply.Term > rf.currentTerm\n", rf.me, server)
 		rf.toFollower(reply.Term)
+		rf.persist()
 		return ok
 	}
 
@@ -478,12 +477,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	if !ok {
+		DPrintf("[%d] sendAppendEntries failed to server %d\n", rf.me, server)
+		return ok
+	}
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
   defer rf.persist()
 
-	if !ok {
-		DPrintf("[%d] sendAppendEntries failed to server %d\n", rf.me, server)
+	if rf.state != Leader || args.Term != rf.currentTerm || reply.Term < rf.currentTerm {
 		return ok
 	}
 
@@ -495,10 +498,16 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// Update nextIndex and matchIndex
 	if reply.Success {
 		EPrintf("[%d] AppendEntries to server %d success\n", rf.me, server)
-		rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
-		if rf.matchIndex[server] < rf.nextIndex[server]-1 {
-			rf.matchIndex[server] = rf.nextIndex[server] - 1
+		rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries)
+		/*
+			if rf.matchIndex[server] < rf.nextIndex[server]-1 {
+				rf.matchIndex[server] = rf.nextIndex[server] - 1
+			}
+		*/
+		if rf.nextIndex[server] > rf.matchIndex[server] {
+			rf.matchIndex[server] = rf.nextIndex[server]
 		}
+		rf.nextIndex[server] = rf.matchIndex[server] + 1
 	} else if reply.ConflictTerm == 0 {
 		rf.nextIndex[server] = reply.ConflictIndex
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
@@ -574,8 +583,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term = rf.currentTerm
 	EPrintf("[%d] Start send command: %v\n", rf.me, command)
 	rf.log = append(rf.log, LogEntry{Term: term, Command: command})
-	index = rf.getLastIndex()
+  rf.persist()
 
+	index = rf.getLastIndex()
 	return index, term, isLeader
 }
 
@@ -695,7 +705,7 @@ func (rf *Raft) ticker() {
 			case <-time.After(randomTimeout()):
 				// Leader not alive, start election
 				DPrintf("[%d] re-election from follower\n", rf.me)
-				rf.startElection()
+				rf.startElection(Follower)
 			}
 		case Candidate:
 			select {
@@ -705,7 +715,7 @@ func (rf *Raft) ticker() {
 			case <-time.After(randomTimeout()):
 				// Re-election
 				DPrintf("[%d] re-election from candidate\n", rf.me)
-				rf.startElection()
+				rf.startElection(Candidate)
 			}
 		default:
 			DPrintf("[%d] invalid state: %s\n", rf.me, state.String())
@@ -713,15 +723,24 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) startElection() {
+func (rf *Raft) startElection(fromState State) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	if rf.state != fromState {
+		return
+	}
 
 	rf.state = Candidate
 	rf.resetChannels()
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.voteCount = 1
+  rf.persist()
+
+	if rf.state != Candidate {
+		return
+	}
 
 	DPrintf("[%d] start election with term %d\n", rf.me, rf.currentTerm)
 	for i := 0; i < len(rf.peers); i++ {
