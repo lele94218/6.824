@@ -360,7 +360,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	if reply.Term > rf.currentTerm {
 		DPrintf("[%d] Request vote from server %d failed, reply.Term > rf.currentTerm\n", rf.me, server)
 		rf.toFollower(reply.Term)
-		rf.persist()
 		return ok
 	}
 
@@ -400,12 +399,12 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-  defer rf.persist()
+	defer rf.persist()
 
-	reply.ConflictTerm = 0
+	reply.Term = rf.currentTerm
 	reply.Success = false
 	reply.ConflictIndex = 0
-	reply.ConflictTerm = rf.currentTerm
+	reply.ConflictTerm = 0
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -417,6 +416,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.toFollower(args.Term)
 	}
 
+	lastIndex := rf.getLastIndex()
 	select {
 	case rf.heartbeatCh <- true:
 	default:
@@ -424,10 +424,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// Check follower log is shorter than leader
-	if args.PrevLogIndex > rf.getLastIndex() {
+	if args.PrevLogIndex > lastIndex {
 		reply.Term = rf.currentTerm
 		reply.Success = false
-		reply.ConflictIndex = rf.getLastIndex() + 1
+		reply.ConflictIndex = lastIndex + 1
 		return
 	}
 	// If an existing entry conflicts with a new one
@@ -441,7 +441,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.log[i].Term == rf.log[args.PrevLogIndex].Term; i-- {
 			conflictIndex = i
 		}
-		rf.lastApplied = conflictIndex
 		reply.ConflictIndex = conflictIndex
 		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
 		reply.Term = rf.currentTerm
@@ -463,8 +462,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// If leaderCommit > commitIndex,
 	// set commitIndex =min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
-		if args.LeaderCommit > rf.getLastIndex() {
-			rf.commitIndex = rf.getLastIndex()
+		if args.LeaderCommit > lastIndex {
+			rf.commitIndex = lastIndex
 		} else {
 			rf.commitIndex = args.LeaderCommit
 		}
@@ -484,7 +483,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-  defer rf.persist()
+	defer rf.persist()
 
 	if rf.state != Leader || args.Term != rf.currentTerm || reply.Term < rf.currentTerm {
 		return ok
@@ -499,11 +498,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	if reply.Success {
 		EPrintf("[%d] AppendEntries to server %d success\n", rf.me, server)
 		rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries)
-		/*
-			if rf.matchIndex[server] < rf.nextIndex[server]-1 {
-				rf.matchIndex[server] = rf.nextIndex[server] - 1
-			}
-		*/
 		if rf.nextIndex[server] > rf.matchIndex[server] {
 			rf.matchIndex[server] = rf.nextIndex[server]
 		}
@@ -583,7 +577,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term = rf.currentTerm
 	EPrintf("[%d] Start send command: %v\n", rf.me, command)
 	rf.log = append(rf.log, LogEntry{Term: term, Command: command})
-  rf.persist()
+	rf.persist()
 
 	index = rf.getLastIndex()
 	return index, term, isLeader
@@ -646,8 +640,6 @@ func (rf *Raft) toLeader() {
 	}
 	rf.state = Leader
 	rf.resetChannels()
-	// rf.commitIndex = 0
-	// rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 	lastLogIndex := rf.getLastIndex()
@@ -666,6 +658,7 @@ func (rf *Raft) toFollower(term int) {
 	rf.state = Follower
 	rf.currentTerm = term
 	rf.votedFor = -1
+	rf.persist()
 	EPrintf("[%d] become follower with term %d\n", rf.me, term)
 	if state != Follower {
 		select {
@@ -736,7 +729,7 @@ func (rf *Raft) startElection(fromState State) {
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.voteCount = 1
-  rf.persist()
+	rf.persist()
 
 	if rf.state != Candidate {
 		return
