@@ -658,7 +658,6 @@ func (rf *Raft) toFollower(term int) {
 	rf.state = Follower
 	rf.currentTerm = term
 	rf.votedFor = -1
-	rf.persist()
 	EPrintf("[%d] become follower with term %d\n", rf.me, term)
 	if state != Follower {
 		select {
@@ -753,7 +752,7 @@ func (rf *Raft) startElection(fromState State) {
 }
 
 func randomTimeout() time.Duration {
-	return time.Duration(150+rand.Intn(150)) * time.Millisecond
+	return time.Duration(360+rand.Intn(240)) * time.Millisecond
 }
 
 // the service or tester wants to create a Raft server. the ports
