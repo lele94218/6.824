@@ -1,6 +1,8 @@
 package raft
 
 //
+// git clone https://github.com/l1nkkk/6.824.git mit-6.824-srcs
+//
 // this is an outline of the API that raft must expose to
 // the service (or tester). see comments below for
 // each of these functions for more details.
@@ -158,10 +160,7 @@ func (rf *Raft) resetChannels() {
 	rf.heartbeatCh = make(chan bool)
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-func (rf *Raft) persist() {
+func (rf *Raft) getPersistState() []byte {
 	// Your code here (2C).
 	// Example:
 	// w := new(bytes.Buffer)
@@ -179,6 +178,14 @@ func (rf *Raft) persist() {
 		panic("persist failed")
 	}
 	data := w.Bytes()
+	return data
+}
+
+// save Raft's persistent state to stable storage,
+// where it can later be retrieved after a crash and restart.
+// see paper's Figure 2 for a description of what should be persistent.
+func (rf *Raft) persist() {
+	data := rf.getPersistState()
 	rf.persister.SaveRaftState(data)
 }
 
@@ -240,8 +247,9 @@ func (rf *Raft) readPersist(data []byte) {
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
 	// Your code here (2D).
+  rf.mu.Lock()
+  defer rf.mu.Unlock()
 
 	return true
 }
@@ -252,7 +260,14 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	lastIndex := rf.getLastIndex()
+	if index <= lastIndex {
+		return
+	}
+	rf.log = rf.log[lastIndex+1:]
+	rf.persister.SaveStateAndSnapshot(rf.getPersistState(), snapshot)
 }
 
 // RPC definitions start here
