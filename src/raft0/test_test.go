@@ -1,4 +1,4 @@
-package raft
+package raft0
 
 //
 // Raft tests.
@@ -494,7 +494,7 @@ func TestRejoin2B(t *testing.T) {
 
 func TestBackup2B(t *testing.T) {
 	servers := 5
-	N := 50
+  N := 50
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
 
